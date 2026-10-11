@@ -87,11 +87,12 @@
                 ⚡ Google Gemma 3 1B (美國 Google 最新一代 / 極速輕量 128K 上下文，約 850MB)
               </option>
             </select>
+            <p class="text-xs text-slate-500 mt-1">選定模型後，請點擊下方「確認下載」按鈕才會開始下載權重至瀏覽器快取。</p>
           </div>
 
-          <!-- 手動載入/重試按鈕 -->
+          <!-- 確認下載按鈕 -->
           <button id="btn-load-model" type="button" class="w-full py-2.5 bg-purple-600 hover:bg-purple-700 text-white font-bold rounded-lg text-sm shadow transition flex items-center justify-center space-x-2">
-            <span>📥 下載並載入所選模型</span>
+            <span>📥 確認下載並載入此模型</span>
           </button>
 
           <div id="llm-status-box" class="hidden text-sm space-y-1 bg-purple-50/50 p-3 rounded-lg border border-purple-100">
@@ -272,8 +273,7 @@
           return;
         }
         modelSelectContainer.classList.remove("hidden");
-        // 開啟開關時立即啟動下載！
-        loadSelectedModel();
+        // 僅展開設定面板，等待使用者按下「確認下載」按鈕才開始下載！
       } else {
         modelSelectContainer.classList.add("hidden");
         webllmEngine = null;
@@ -281,14 +281,16 @@
       }
     });
 
+    // 只有使用者按下「確認下載」按鈕才開始下載模型！
     btnLoadModel.addEventListener("click", () => {
       loadSelectedModel();
     });
 
     modelSelect.addEventListener("change", () => {
-      if (webllmToggle.checked) {
-        loadSelectedModel();
-      }
+      // 切換模型時重設確認按鈕狀態，等待使用者點擊確認才下載
+      btnLoadModel.disabled = false;
+      btnLoadModel.innerText = `📥 確認下載並載入此模型`;
+      btnLoadModel.className = "w-full py-2.5 bg-purple-600 hover:bg-purple-700 text-white font-bold rounded-lg text-sm shadow transition flex items-center justify-center space-x-2";
     });
 
     async function ensureModelLoaded(modelId) {
