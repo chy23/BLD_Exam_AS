@@ -653,6 +653,65 @@
       const numPages = pdf.numPages;
 
       let allTextLines = [];
+      let headerImgData = null;
+      let headerImgHeight = 100;
+
+      // 0. 針對第 1 頁高畫質渲染並擷取原試卷完整標頭（複製原校名、學年度、單元標題、裝飾與班級座號格）
+      let headerCutYPt = 95;
+      try {
+        const page1 = await pdf.getPage(1);
+        const vp1 = page1.getViewport({ scale: 2.0 });
+        const p1Canvas = document.createElement("canvas");
+        p1Canvas.width = vp1.width;
+        p1Canvas.height = vp1.height;
+        const p1Ctx = p1Canvas.getContext("2d");
+        await page1.render({ canvasContext: p1Ctx, viewport: vp1 }).promise;
+
+        // 抹除第 1 頁上可能出現的標準答案筆跡
+        const p1Tc = await page1.getTextContent();
+        const vp1_base = page1.getViewport({ scale: 1.0 });
+        const p1Masks = detectBlackAnswerMasks(p1Tc, vp1_base, 2.0);
+        p1Ctx.fillStyle = "#FFFFFF";
+        for (const m of p1Masks) {
+          p1Ctx.fillRect(m.x, m.y, m.w, m.h);
+        }
+
+        // 偵測第 1 頁上第一大題位置與學生資料行位置
+        const p1Items = p1Tc.items.map(it => ({
+          str: it.str.trim(),
+          x: it.transform[4],
+          y: vp1_base.height - it.transform[5],
+          w: it.width || 0,
+          h: it.height || 0
+        })).filter(it => it.str.length > 0);
+
+        const firstSec = p1Items.find(it => (it.x < 360 || vp1_base.width <= 700) && (/^[（\(]?[一壹][）\)]?[、.．\s]/.test(it.str) || it.str.startsWith("一、") || it.str.startsWith("壹、")));
+        const studentInfoItems = p1Items.filter(it => ["姓名", "座號", "班級", "年", "班", "號", "得分"].some(k => it.str.includes(k)) && it.y < 140);
+        const maxStudentY = studentInfoItems.length > 0 ? Math.max(...studentInfoItems.map(s => s.y + s.h)) : 80;
+
+        headerCutYPt = firstSec ? Math.min(firstSec.y - 8, maxStudentY + 18) : (maxStudentY + 18);
+        if (headerCutYPt < 70) headerCutYPt = 90;
+        if (firstSec && headerCutYPt >= firstSec.y) headerCutYPt = firstSec.y - 6;
+
+        // 裁切原卷考卷標頭區域
+        const cropCanvas = document.createElement("canvas");
+        const cropHPx = Math.round(headerCutYPt * 2.0);
+        cropCanvas.width = vp1.width;
+        cropCanvas.height = cropHPx;
+        const cropCtx = cropCanvas.getContext("2d");
+        cropCtx.drawImage(
+          p1Canvas,
+          0, 0, vp1.width, cropHPx,
+          0, 0, vp1.width, cropHPx
+        );
+
+        const blob = await new Promise(res => cropCanvas.toBlob(res, "image/png"));
+        const arrayBuf = await blob.arrayBuffer();
+        headerImgData = new Uint8Array(arrayBuf);
+        headerImgHeight = Math.round(580 * (cropHPx / vp1.width));
+      } catch (cropErr) {
+        console.warn("無法擷取原卷標頭圖片，使用純文字標頭表格：", cropErr);
+      }
 
       function groupItemsIntoLines(items) {
         const sorted = [...items].sort((a, b) => {
@@ -692,8 +751,8 @@
         let bodyItems = items;
 
         if (p === 1) {
-          headerItems = items.filter(it => it.y < 95);
-          bodyItems = items.filter(it => it.y >= 95);
+          headerItems = items.filter(it => it.y < headerCutYPt && !/^[123456789]\./.test(it.str));
+          bodyItems = items.filter(it => it.y >= headerCutYPt);
         }
 
         const midX = viewport.width / 2.0;
@@ -717,7 +776,7 @@
         }
       }
 
-      // 1. 忠實擷取原考卷大標題
+      // 1. 忠實擷取原考卷大標題（清理多餘數字空格與中文空格）
       const sectionRegex = /^[（\(]?[一二三四五六七八九十壹貳參肆伍陸柒捌玖拾]+[）\)]?[、.．\s]+(.*)/;
       let firstSecIdx = allTextLines.length;
       for (let i = 0; i < allTextLines.length; i++) {
@@ -730,12 +789,16 @@
       const rawTitleLines = [];
       for (let i = 0; i < firstSecIdx; i++) {
         const l = allTextLines[i];
-        if (["姓名", "座號", "得分", "班級", "年 班", "年級"].some(k => l.includes(k))) continue;
-        if (/[\d一二三四五六]\s*年.*?班.*?號/.test(l)) continue;
+        if (["姓名", "座號", "班級", "年 班", "年    班"].some(k => l.includes(k) && !l.includes("評量") && !l.includes("試卷") && !l.includes("檢測"))) continue;
+        if (/^[\d一二三四五六]\s*年.*?班.*?號/.test(l)) continue;
+        if (/^[123456789]\./.test(l)) continue;
         rawTitleLines.push(l);
       }
       let examTitle = rawTitleLines.length > 0 ? rawTitleLines.join(" ") : "國小 評量試卷";
-      examTitle = examTitle.replace(/([\u4e00-\u9fa5])\s+([\u4e00-\u9fa5])/g, "$1$2").replace(/([\u4e00-\u9fa5])\s+([\u4e00-\u9fa5])/g, "$1$2");
+      examTitle = examTitle.replace(/(\d)\s+(\d)/g, "$1$2")
+                           .replace(/(\d)\s+(\d)/g, "$1$2")
+                           .replace(/([\u4e00-\u9fa5])\s+([\u4e00-\u9fa5])/g, "$1$2")
+                           .replace(/([\u4e00-\u9fa5])\s+([\u4e00-\u9fa5])/g, "$1$2");
 
       // 2. 切割大題與多行標題合併
       const sections = [];
@@ -858,7 +921,7 @@
       }
 
       // 4. 使用 docx.js 繪製標準答案卷 Docx
-      const { Document, Packer, Paragraph, Table, TableRow, TableCell, TextRun, WidthType, AlignmentType, VerticalAlign, BorderStyle, ShadingType } = docx;
+      const { Document, Packer, Paragraph, Table, TableRow, TableCell, TextRun, ImageRun, WidthType, AlignmentType, VerticalAlign, BorderStyle, ShadingType } = docx;
 
       const solidBorder = { style: BorderStyle.SINGLE, size: 6, color: "000000" };
       const allBorders = {
@@ -872,47 +935,64 @@
 
       const docElements = [];
 
-      // 頂部標頭表格 (2 列 8 欄)
-      const headerRow1 = new TableRow({
-        children: [
-          new TableCell({
-            children: [new Paragraph({ children: [new TextRun({ text: examTitle, bold: true, size: 28 })], alignment: AlignmentType.CENTER })],
-            columnSpan: 8,
+      // 頂部標頭：優先直接複製原試卷高解析標頭（完美呈現原校名、學年度、單元標題、裝飾與班級座號格）
+      if (headerImgData) {
+        docElements.push(new Paragraph({
+          children: [
+            new ImageRun({
+              data: headerImgData,
+              transformation: {
+                width: 580,
+                height: headerImgHeight
+              }
+            })
+          ],
+          alignment: AlignmentType.CENTER,
+          spacing: { after: 120 }
+        }));
+      } else {
+        // 後備方案：結構化標頭表格
+        const headerRow1 = new TableRow({
+          children: [
+            new TableCell({
+              children: [new Paragraph({ children: [new TextRun({ text: examTitle, bold: true, size: 28 })], alignment: AlignmentType.CENTER })],
+              columnSpan: 8,
+              borders: allBorders,
+              verticalAlign: VerticalAlign.CENTER
+            })
+          ]
+        });
+
+        const colDefs = [
+          { text: "班級", bold: true, bg: "F2F2F2", width: 10 },
+          { text: "    年    班", bold: false, bg: "FFFFFF", width: 18 },
+          { text: "座號", bold: true, bg: "F2F2F2", width: 10 },
+          { text: "    號", bold: false, bg: "FFFFFF", width: 12 },
+          { text: "姓名", bold: true, bg: "F2F2F2", width: 10 },
+          { text: "          ", bold: false, bg: "FFFFFF", width: 20 },
+          { text: "得分", bold: true, bg: "F2F2F2", width: 10 },
+          { text: " ", bold: false, bg: "FFFFFF", width: 10 }
+        ];
+
+        const headerRow2 = new TableRow({
+          children: colDefs.map(c => new TableCell({
+            children: [new Paragraph({ children: [new TextRun({ text: c.text, bold: c.bold, size: 21 })], alignment: AlignmentType.CENTER })],
+            width: { size: c.width, type: WidthType.PERCENTAGE },
             borders: allBorders,
+            shading: c.bg !== "FFFFFF" ? { fill: c.bg, type: ShadingType.CLEAR } : undefined,
             verticalAlign: VerticalAlign.CENTER
-          })
-        ]
-      });
+          }))
+        });
 
-      const colDefs = [
-        { text: "班級", bold: true, bg: "F2F2F2", width: 10 },
-        { text: "    年    班", bold: false, bg: "FFFFFF", width: 18 },
-        { text: "座號", bold: true, bg: "F2F2F2", width: 10 },
-        { text: "    號", bold: false, bg: "FFFFFF", width: 12 },
-        { text: "姓名", bold: true, bg: "F2F2F2", width: 10 },
-        { text: "          ", bold: false, bg: "FFFFFF", width: 20 },
-        { text: "得分", bold: true, bg: "F2F2F2", width: 10 },
-        { text: " ", bold: false, bg: "FFFFFF", width: 10 }
-      ];
-
-      const headerRow2 = new TableRow({
-        children: colDefs.map(c => new TableCell({
-          children: [new Paragraph({ children: [new TextRun({ text: c.text, bold: c.bold, size: 21 })], alignment: AlignmentType.CENTER })],
-          width: { size: c.width, type: WidthType.PERCENTAGE },
+        const headerTable = new Table({
+          width: { size: 100, type: WidthType.PERCENTAGE },
           borders: allBorders,
-          shading: c.bg !== "FFFFFF" ? { fill: c.bg, type: ShadingType.CLEAR } : undefined,
-          verticalAlign: VerticalAlign.CENTER
-        }))
-      });
+          rows: [headerRow1, headerRow2]
+        });
 
-      const headerTable = new Table({
-        width: { size: 100, type: WidthType.PERCENTAGE },
-        borders: allBorders,
-        rows: [headerRow1, headerRow2]
-      });
-
-      docElements.push(headerTable);
-      docElements.push(new Paragraph({ text: "" }));
+        docElements.push(headerTable);
+        docElements.push(new Paragraph({ text: "" }));
+      }
 
       // 各大題排版
       for (const sec of sections) {
