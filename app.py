@@ -14,10 +14,50 @@ from docx.enum.table import WD_TABLE_ALIGNMENT, WD_ALIGN_VERTICAL
 from docx.oxml import parse_xml, OxmlElement
 from docx.oxml.ns import nsdecls, qn
 
-# --- 輔助函式：Docx 樣式與表格微調 ---
+# ==========================================
+# 1. Docx 表格邊框與儲存格樣式（強化雙重保險）
+# ==========================================
+
+def apply_table_borders(table, color="000000", sz="6", val="single"):
+    """
+    在表格的 tblPr 中寫入完整且標準的 w:tblBorders，
+    確保在 Microsoft Word、WPS Office、LibreOffice、Google Docs 都能 100% 顯示清晰實線黑邊框。
+    """
+    tblPr = table._tbl.tblPr
+    for child in list(tblPr):
+        if child.tag.endswith("tblBorders"):
+            tblPr.remove(child)
+
+    borders = parse_xml(f'''
+        <w:tblBorders {nsdecls("w")}>
+            <w:top w:val="{val}" w:sz="{sz}" w:space="0" w:color="{color}"/>
+            <w:left w:val="{val}" w:sz="{sz}" w:space="0" w:color="{color}"/>
+            <w:bottom w:val="{val}" w:sz="{sz}" w:space="0" w:color="{color}"/>
+            <w:right w:val="{val}" w:sz="{sz}" w:space="0" w:color="{color}"/>
+            <w:insideH w:val="{val}" w:sz="{sz}" w:space="0" w:color="{color}"/>
+            <w:insideV w:val="{val}" w:sz="{sz}" w:space="0" w:color="{color}"/>
+        </w:tblBorders>
+    ''')
+    tblPr.append(borders)
+
+def apply_cell_borders(cell, color="000000", sz="6", val="single"):
+    """為單一儲存格寫入 tcBorders，防止跨平台檢視器忽略表格層級邊框"""
+    tcPr = cell._tc.get_or_add_tcPr()
+    for child in list(tcPr):
+        if child.tag.endswith("tcBorders"):
+            tcPr.remove(child)
+    borders = parse_xml(f'''
+        <w:tcBorders {nsdecls("w")}>
+            <w:top w:val="{val}" w:sz="{sz}" w:space="0" w:color="{color}"/>
+            <w:left w:val="{val}" w:sz="{sz}" w:space="0" w:color="{color}"/>
+            <w:bottom w:val="{val}" w:sz="{sz}" w:space="0" w:color="{color}"/>
+            <w:right w:val="{val}" w:sz="{sz}" w:space="0" w:color="{color}"/>
+        </w:tcBorders>
+    ''')
+    tcPr.append(borders)
 
 def set_cell_background(cell, fill_hex):
-    """設定表格儲存格背景色 (例如 'F2F2F2')"""
+    """設定儲存格背景色 (例如 'F2F2F2')"""
     shading_elm = parse_xml(f'<w:shd {nsdecls("w")} w:fill="{fill_hex}"/>')
     cell._tc.get_or_add_tcPr().append(shading_elm)
 
@@ -28,6 +68,7 @@ def format_cell_text(cell, text, bold=False, size_pt=10.5, align=WD_ALIGN_PARAGR
     p.alignment = align
     p.paragraph_format.space_before = Pt(2)
     p.paragraph_format.space_after = Pt(2)
+    p.paragraph_format.line_spacing = 1.0
     run = p.add_run(text)
     run.font.name = font_name
     run._element.rPr.rFonts.set(qn('w:eastAsia'), font_name)
@@ -37,15 +78,14 @@ def format_cell_text(cell, text, bold=False, size_pt=10.5, align=WD_ALIGN_PARAGR
 
 def add_header_table(doc, exam_title):
     """
-    建立標準台灣國小/國中試卷的頂部標頭表格：
-    包含試卷名稱、班級、年班、座號、姓名、得分格
+    建立標準台灣試卷答案卷標頭表格：
+    包含大標題、班級、年班、座號、姓名、得分格（帶清晰黑色實線框）
     """
     table = doc.add_table(rows=2, cols=8)
-    table.style = 'Table Grid'
     table.alignment = WD_TABLE_ALIGNMENT.CENTER
     table.autofit = False
 
-    # 第 1 列：試卷名稱 (合併 8 欄)
+    # 第 1 列：大標題合併
     header_cell = table.cell(0, 0)
     for c in range(1, 8):
         header_cell.merge(table.cell(0, c))
@@ -53,48 +93,52 @@ def add_header_table(doc, exam_title):
     format_cell_text(header_cell, exam_title, bold=True, size_pt=14, align=WD_ALIGN_PARAGRAPH.CENTER)
     table.rows[0].height = Pt(32)
 
-    # 第 2 列：學生資訊欄位
-    # 欄位配比: 班級 | ___年___班 | 座號 | ___號 | 姓名 | ________ | 得分 | ____
-    headers = [
-        ("班級", True, "F4F4F4", 1.0),
-        ("     年     班", False, "FFFFFF", 1.8),
-        ("座號", True, "F4F4F4", 1.0),
-        ("     號", False, "FFFFFF", 1.2),
-        ("姓名", True, "F4F4F4", 1.0),
-        ("           ", False, "FFFFFF", 2.0),
-        ("得分", True, "F4F4F4", 1.0),
-        (" ", False, "FFFFFF", 1.4)
+    # 第 2 列：個人資訊格
+    col_configs = [
+        ("班級", True, "F2F2F2", Inches(0.8)),
+        ("    年    班", False, "FFFFFF", Inches(1.5)),
+        ("座號", True, "F2F2F2", Inches(0.8)),
+        ("    號", False, "FFFFFF", Inches(1.0)),
+        ("姓名", True, "F2F2F2", Inches(0.8)),
+        ("          ", False, "FFFFFF", Inches(1.5)),
+        ("得分", True, "F2F2F2", Inches(0.8)),
+        (" ", False, "FFFFFF", Inches(1.0))
     ]
 
-    for col_idx, (text, is_bold, bg_color, width_in) in enumerate(headers):
+    for col_idx, (text, is_bold, bg_color, width_in) in enumerate(col_configs):
         cell = table.cell(1, col_idx)
-        cell.width = Inches(width_in)
-        format_cell_text(cell, text, bold=is_bold, size_pt=11, align=WD_ALIGN_PARAGRAPH.CENTER)
+        cell.width = width_in
+        format_cell_text(cell, text, bold=is_bold, size_pt=10.5, align=WD_ALIGN_PARAGRAPH.CENTER)
         if bg_color != "FFFFFF":
             set_cell_background(cell, bg_color)
-
-    table.rows[1].height = Pt(26)
     
-    # 加上段落間距
-    p = doc.add_paragraph()
-    p.paragraph_format.space_before = Pt(4)
-    p.paragraph_format.space_after = Pt(4)
+    table.rows[1].height = Pt(26)
 
-# --- 題目卷：消除紅色答案 (純題目卷) ---
+    # 強制加入全黑實線邊框
+    apply_table_borders(table, color="000000", sz="6", val="single")
+    for row in table.rows:
+        for cell in row.cells:
+            apply_cell_borders(cell, color="000000", sz="6", val="single")
+
+    p_spacer = doc.add_paragraph()
+    p_spacer.paragraph_format.space_before = Pt(4)
+    p_spacer.paragraph_format.space_after = Pt(4)
+
+# ==========================================
+# 2. 題目卷：消除紅色答案 (純題目卷)
+# ==========================================
 
 def remove_red_from_pdf(pdf_bytes):
     """
-    透過精確 HSV 濾色消除紅字答案，並保留原始頁面格式 (A4/A3/B4/直式/橫式)。
+    透過精確 HSV 濾色消除紅字答案，保留原始版面、尺寸 (A4/A3/B4) 與方向 (直式/橫式)。
     """
     doc = fitz.open(stream=pdf_bytes, filetype="pdf")
     processed_images = []
 
     for page_num in range(len(doc)):
         page = doc.load_page(page_num)
-        # 以 200 DPI 高畫質轉為影像
         pix = page.get_pixmap(dpi=200)
 
-        # 轉換為 numpy 陣列
         img_np = np.frombuffer(pix.samples, dtype=np.uint8).reshape(pix.h, pix.w, pix.n)
 
         if pix.n == 4:
@@ -105,7 +149,7 @@ def remove_red_from_pdf(pdf_bytes):
         img_cv = cv2.cvtColor(img_np, cv2.COLOR_RGB2BGR)
         hsv = cv2.cvtColor(img_cv, cv2.COLOR_BGR2HSV)
 
-        # 紅色在 HSV 色彩空間的兩個區間 (色相 0~10 與 170~180)
+        # 紅色 HSV 範圍
         lower_red1 = np.array([0, 45, 45])
         upper_red1 = np.array([12, 255, 255])
         lower_red2 = np.array([168, 45, 45])
@@ -115,11 +159,11 @@ def remove_red_from_pdf(pdf_bytes):
         mask2 = cv2.inRange(hsv, lower_red2, upper_red2)
         mask = cv2.bitwise_or(mask1, mask2)
 
-        # 輕微膨脹遮罩以徹底消除紅字邊緣粉紅色反鋸齒
+        # 膨脹以消除紅色邊緣反鋸齒
         kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (2, 2))
         mask_dilated = cv2.dilate(mask, kernel, iterations=1)
 
-        # 將紅字區域直接覆蓋成純白色 (255, 255, 255)
+        # 覆蓋為純白色背景
         img_cv[mask_dilated > 0] = [255, 255, 255]
 
         result_image = cv2.cvtColor(img_cv, cv2.COLOR_BGR2RGB)
@@ -136,14 +180,11 @@ def remove_red_from_pdf(pdf_bytes):
         )
     return output_io.getvalue()
 
-# --- 答題卷分析與產生 (空白答案卡卷) ---
+# ==========================================
+# 3. 試卷結構深度解析 (雙欄支援、大題與題號推估)
+# ==========================================
 
 def extract_pdf_structure(pdf_bytes):
-    """
-    智慧解析考卷結構：
-    - 自動判別雙欄排版 (左欄優先再右欄)
-    - 識別標題、各階段大題、題型與題數
-    """
     doc = fitz.open(stream=pdf_bytes, filetype="pdf")
     lines_in_order = []
 
@@ -152,15 +193,14 @@ def extract_pdf_structure(pdf_bytes):
         page_width = rect.width
         page_height = rect.height
         blocks = page.get_text("blocks")
-        # 篩選有效文字塊
         text_blocks = [b for b in blocks if b[6] == 0 and b[4].strip()]
 
-        # 頂部標題區閥值
+        # 頂部標題閥值
         header_thresh = page_height * 0.15
         header_blocks = [b for b in text_blocks if b[1] < header_thresh]
         body_blocks = [b for b in text_blocks if b[1] >= header_thresh]
 
-        # 判斷是否為雙欄
+        # 智慧判斷左右雙欄
         mid_x = page_width / 2.0
         left_col = [b for b in body_blocks if (b[0] + b[2]) / 2.0 < mid_x]
         right_col = [b for b in body_blocks if (b[0] + b[2]) / 2.0 >= mid_x]
@@ -181,14 +221,14 @@ def extract_pdf_structure(pdf_bytes):
                 if line_str:
                     lines_in_order.append(line_str)
 
-    # 擷取試卷總標題
+    # 擷取試卷大標題
     exam_title = "國小 評量試卷"
-    for line in lines_in_order[:10]:
-        if any(k in line for k in ["國小", "國中", "學年度", "試卷", "評量", "數學", "語文", "自然"]):
+    for line in lines_in_order[:12]:
+        if any(k in line for k in ["國小", "國中", "學年度", "試卷", "評量", "領域", "數學", "國語", "自然", "社會"]):
             exam_title = line
             break
 
-    # 解析大題與題目
+    # 大題正則與計分正則
     section_regex = re.compile(r'^[（\(]?[一二三四五六七八九十壹貳參肆伍陸柒捌玖拾]+[）\)]?[、.．\s]+(.*)')
     score_regex = re.compile(r'每[小題題格份]+[：:\s]*(\d+)\s*分.*?共\s*(\d+)\s*分')
     alt_score_regex = re.compile(r'共\s*(\d+)\s*分.*?每[小題題格份]+[：:\s]*(\d+)\s*分')
@@ -213,10 +253,10 @@ def extract_pdf_structure(pdf_bytes):
                 sec_type = "FILL_BLANK"
             elif any(k in title for k in ["算算看", "計算", "直式", "做做看"]):
                 sec_type = "CALCULATION"
-            elif any(k in title for k in ["做法", "應用", "問答", "過程", "解決", "寫出"]):
+            elif any(k in title for k in ["做法", "應用", "問答", "過程", "解決", "寫出", "記下來", "先圈", "圈一圈"]):
                 sec_type = "APPLICATION"
 
-            # 推估題數 (透過「每題X分，共Y分」)
+            # 計算期望題數
             expected_count = 0
             sc_m = score_regex.search(title)
             if sc_m:
@@ -246,11 +286,10 @@ def extract_pdf_structure(pdf_bytes):
     if current_sec:
         sections.append(current_sec)
 
-    # 進一步從 raw_lines 抽取題目標號或小題
+    # 抽取各題號
     for sec in sections:
         detected_q = []
         for line in sec["raw_lines"]:
-            # 題號模式：如 "1.", "1、", "( ) 1.", "（ ）1.", "1. ( )", "3-a", "7-1"
             q_num_match = re.search(r'(?:[\(（]\s*[\)）\dOoxX✓✔\s]*[\)）]\s*)?(\d+(?:[-_][a-zA-Z0-9]+)?)[\.．、\s]', line)
             if q_num_match:
                 q_id = q_num_match.group(1)
@@ -261,49 +300,57 @@ def extract_pdf_structure(pdf_bytes):
                 if sub_id not in detected_q:
                     detected_q.append(sub_id)
 
-        # 綜合判斷：如果抓到的題號太少，但有預期題數，則用預期題數補齊
+        # 依預期題數進行智慧補齊
         if len(detected_q) < sec["expected_count"] and sec["expected_count"] > 0:
             if len(detected_q) == 0:
                 detected_q = [str(i) for i in range(1, sec["expected_count"] + 1)]
             else:
-                # 補充至預期題數
                 last_num = int(detected_q[-1]) if detected_q[-1].isdigit() else len(detected_q)
                 while len(detected_q) < sec["expected_count"]:
                     last_num += 1
                     detected_q.append(str(last_num))
         elif len(detected_q) == 0:
             # 預設題數
-            default_cnt = 10 if sec["type"] in ["CHOICE", "TRUE_FALSE", "FILL_BLANK"] else (3 if sec["type"] == "CALCULATION" else 2)
+            if sec["type"] in ["CHOICE", "TRUE_FALSE", "FILL_BLANK"]:
+                default_cnt = 10
+            elif sec["type"] == "CALCULATION":
+                default_cnt = 3
+            elif sec["type"] == "APPLICATION":
+                default_cnt = 2
+            else:
+                default_cnt = 1
             detected_q = [str(i) for i in range(1, default_cnt + 1)]
 
         sec["questions"] = detected_q
 
     return exam_title, sections
 
+# ==========================================
+# 4. 空白答案卡卷（答題卷）Docx 表格繪製
+# ==========================================
+
 def generate_blank_answer_sheet_docx(pdf_bytes):
-    """
-    產生與使用者提供的範例 100% 吻合的標準「空白答案卡卷（答題卷）」Docx 檔
-    """
     exam_title, sections = extract_pdf_structure(pdf_bytes)
 
     doc = Document()
 
-    # 設定版面邊界為標準 2 公分
+    # 設定邊距（上下左右皆為 1.8 公分，約 0.7 英吋）
     sections_page = doc.sections[0]
     sections_page.top_margin = Inches(0.7)
     sections_page.bottom_margin = Inches(0.7)
     sections_page.left_margin = Inches(0.7)
     sections_page.right_margin = Inches(0.7)
 
-    # 1. 頂部標頭表格 (Header Table)
+    # 1. 建立頂部標頭表格
     add_header_table(doc, exam_title)
 
-    # 2. 逐一產生各題型的答案卡表格
+    # 2. 逐一產生各題型的答案卡框格
     for sec in sections:
-        # 大題標題
+        # 大題標題段落
         p_title = doc.add_paragraph()
         p_title.paragraph_format.space_before = Pt(8)
-        p_title.paragraph_format.space_after = Pt(4)
+        p_title.paragraph_format.space_after = Pt(3)
+        p_title.paragraph_format.line_spacing = 1.0
         run = p_title.add_run(sec["title"])
         run.bold = True
         run.font.name = '微軟正黑體'
@@ -314,79 +361,95 @@ def generate_blank_answer_sheet_docx(pdf_bytes):
         s_type = sec["type"]
 
         if s_type in ["CHOICE", "TRUE_FALSE", "FILL_BLANK"]:
-            # --- 選擇題 / 是非題 / 填填看：10 欄網格表格 ---
+            # --- 選擇題 / 是非題 / 填填看：標準 10 欄網格表格 ---
             col_max = 10
             total_q = len(q_list)
-            # 以 10 題為一組分排
             for chunk_start in range(0, total_q, col_max):
                 chunk = q_list[chunk_start:chunk_start + col_max]
                 num_cols = len(chunk)
                 
-                # 建立 2 列 (第 1 列題號，第 2 列空白填寫格)
                 tbl = doc.add_table(rows=2, cols=num_cols)
-                tbl.style = 'Table Grid'
                 tbl.alignment = WD_TABLE_ALIGNMENT.CENTER
                 tbl.autofit = False
 
                 tbl.rows[0].height = Pt(22)
-                tbl.rows[1].height = Pt(36)
+                tbl.rows[1].height = Pt(36) # 預留充足作答高度
+
+                cell_w = Inches(7.2 / max(num_cols, 1))
 
                 for idx, q_num in enumerate(chunk):
-                    # 題號列
+                    # 第 1 列：題號
                     c_num = tbl.cell(0, idx)
+                    c_num.width = cell_w
                     format_cell_text(c_num, f"{q_num}.", bold=True, size_pt=10, align=WD_ALIGN_PARAGRAPH.CENTER)
                     set_cell_background(c_num, "F2F2F2")
+                    apply_cell_borders(c_num, color="000000", sz="6", val="single")
 
-                    # 作答列
+                    # 第 2 列：空白作答格
                     c_ans = tbl.cell(1, idx)
+                    c_ans.width = cell_w
                     c_ans.text = ""
                     c_ans.vertical_alignment = WD_ALIGN_VERTICAL.CENTER
+                    apply_cell_borders(c_ans, color="000000", sz="6", val="single")
 
-                # 表格下方微距
+                # 強制加上表格全黑邊框
+                apply_table_borders(tbl, color="000000", sz="6", val="single")
+
                 p_space = doc.add_paragraph()
                 p_space.paragraph_format.space_before = Pt(2)
                 p_space.paragraph_format.space_after = Pt(2)
 
         elif s_type == "CALCULATION":
-            # --- 算算看 / 計算題：3 欄大型計算網格 ---
-            col_cnt = 3
+            # --- 算算看 / 計算題 / 做做看：3 欄大型計算網格 ---
+            col_cnt = 3 if len(q_list) >= 3 else len(q_list)
+            col_cnt = max(col_cnt, 1)
             total_q = len(q_list)
+
             for chunk_start in range(0, total_q, col_cnt):
                 chunk = q_list[chunk_start:chunk_start + col_cnt]
                 num_cols = len(chunk)
 
                 tbl = doc.add_table(rows=1, cols=num_cols)
-                tbl.style = 'Table Grid'
                 tbl.alignment = WD_TABLE_ALIGNMENT.CENTER
                 tbl.autofit = False
-                tbl.rows[0].height = Pt(130) # 足夠寫直式的垂直高度
+                tbl.rows[0].height = Pt(135) # 直式算式垂直高度
+
+                cell_w = Inches(7.2 / num_cols)
 
                 for idx, q_num in enumerate(chunk):
                     cell = tbl.cell(0, idx)
+                    cell.width = cell_w
                     p = cell.paragraphs[0]
                     p.paragraph_format.space_before = Pt(4)
+                    p.paragraph_format.space_after = Pt(0)
+                    p.paragraph_format.left_indent = Inches(0.08)
                     run_num = p.add_run(f"{q_num}.")
                     run_num.bold = True
                     run_num.font.name = '微軟正黑體'
                     run_num._element.rPr.rFonts.set(qn('w:eastAsia'), '微軟正黑體')
                     run_num.font.size = Pt(11)
 
+                    apply_cell_borders(cell, color="000000", sz="6", val="single")
+
+                apply_table_borders(tbl, color="000000", sz="6", val="single")
+
                 p_space = doc.add_paragraph()
                 p_space.paragraph_format.space_before = Pt(3)
                 p_space.paragraph_format.space_after = Pt(3)
 
         elif s_type == "APPLICATION":
-            # --- 應用題 / 問答題 / 過程題：單欄大作答框 ---
+            # --- 應用題 / 問答題 / 把做法和答案記下來 / 圈一圈：單欄大型作答框 ---
             for q_num in q_list:
                 tbl = doc.add_table(rows=1, cols=1)
-                tbl.style = 'Table Grid'
                 tbl.alignment = WD_TABLE_ALIGNMENT.CENTER
                 tbl.autofit = False
-                tbl.rows[0].height = Pt(110) # 寬敞的解題與作答框
+                tbl.rows[0].height = Pt(110) # 寬敞的解題作答空間
 
                 cell = tbl.cell(0, 0)
+                cell.width = Inches(7.2)
                 p_q = cell.paragraphs[0]
                 p_q.paragraph_format.space_before = Pt(4)
+                p_q.paragraph_format.left_indent = Inches(0.08)
                 run_q = p_q.add_run(f"{q_num}. ")
                 run_q.bold = True
                 run_q.font.name = '微軟正黑體'
@@ -397,33 +460,45 @@ def generate_blank_answer_sheet_docx(pdf_bytes):
                 p_ans = cell.add_paragraph()
                 p_ans.alignment = WD_ALIGN_PARAGRAPH.RIGHT
                 p_ans.paragraph_format.space_before = Pt(65)
-                run_ans = p_ans.add_run("答：____________________")
+                run_ans = p_ans.add_run("答：____________________    ")
                 run_ans.font.name = '微軟正黑體'
                 run_ans._element.rPr.rFonts.set(qn('w:eastAsia'), '微軟正黑體')
                 run_ans.font.size = Pt(10.5)
+
+                apply_cell_borders(cell, color="000000", sz="6", val="single")
+                apply_table_borders(tbl, color="000000", sz="6", val="single")
 
                 p_space = doc.add_paragraph()
                 p_space.paragraph_format.space_before = Pt(3)
                 p_space.paragraph_format.space_after = Pt(3)
         else:
-            # 其他綜合型：5 欄答題格
+            # 其他題型：標準寬度作答框
             col_max = 5
             total_q = len(q_list)
             for chunk_start in range(0, total_q, col_max):
                 chunk = q_list[chunk_start:chunk_start + col_max]
-                tbl = doc.add_table(rows=2, cols=len(chunk))
-                tbl.style = 'Table Grid'
+                num_cols = len(chunk)
+                tbl = doc.add_table(rows=2, cols=num_cols)
                 tbl.alignment = WD_TABLE_ALIGNMENT.CENTER
+                tbl.autofit = False
                 tbl.rows[0].height = Pt(22)
-                tbl.rows[1].height = Pt(36)
+                tbl.rows[1].height = Pt(38)
+
+                cell_w = Inches(7.2 / num_cols)
 
                 for idx, q_num in enumerate(chunk):
                     c_num = tbl.cell(0, idx)
+                    c_num.width = cell_w
                     format_cell_text(c_num, f"{q_num}.", bold=True, size_pt=10)
                     set_cell_background(c_num, "F2F2F2")
+                    apply_cell_borders(c_num, color="000000", sz="6", val="single")
 
                     c_ans = tbl.cell(1, idx)
+                    c_ans.width = cell_w
                     c_ans.text = ""
+                    apply_cell_borders(c_ans, color="000000", sz="6", val="single")
+
+                apply_table_borders(tbl, color="000000", sz="6", val="single")
 
                 p_space = doc.add_paragraph()
                 p_space.paragraph_format.space_before = Pt(2)
@@ -433,11 +508,13 @@ def generate_blank_answer_sheet_docx(pdf_bytes):
     doc.save(doc_io)
     return doc_io.getvalue()
 
-# --- 主介面 Streamlit ---
+# ==========================================
+# 5. 主介面 Streamlit
+# ==========================================
 
 def main():
     st.set_page_config(
-        page_title="考卷轉換與空白答案卷生成器",
+        page_title="考卷轉換與空白答案卡卷生成器",
         page_icon="📝",
         layout="centered"
     )
@@ -445,7 +522,7 @@ def main():
     st.markdown("""
         <style>
         .main-header {
-            font-size: 2.2rem;
+            font-size: 2.1rem;
             font-weight: 700;
             color: #1E3A8A;
             text-align: center;
@@ -455,11 +532,11 @@ def main():
             font-size: 1.05rem;
             color: #4B5563;
             text-align: center;
-            margin-bottom: 2rem;
+            margin-bottom: 1.8rem;
         }
         .stButton>button {
             width: 100%;
-            height: 3rem;
+            height: 3.2rem;
             font-size: 1.2rem;
             font-weight: bold;
         }
@@ -483,7 +560,7 @@ def main():
         st.markdown("---")
         st.subheader("⚙️ 匯出選項設定")
 
-        # 匯出模式單選 (解決分開下載的困擾)
+        # 匯出模式單選 (一次打包下載，免除分開下載)
         export_mode = st.radio(
             "請選擇匯出模式：",
             (
@@ -498,7 +575,7 @@ def main():
 
         # 執行轉換按鈕
         if st.button("🚀 開始處理並產生檔案", type="primary"):
-            with st.spinner("正在分析試卷結構、處理圖像與排版中，請稍候..."):
+            with st.spinner("正在分析試卷結構、處理圖像與排版框格中，請稍候..."):
                 try:
                     if "同時匯出兩者" in export_mode:
                         # 處理純題目卷 PDF
