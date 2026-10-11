@@ -399,8 +399,184 @@
     }
 
     // ==========================================
-    // 演算法 A：純題目卷（高精準 Canvas 濾色 + PDF-Lib）
+    // 演算法 A：純題目卷（文字幾何遮罩 + Canvas 濾色 + PDF-Lib）
     // ==========================================
+    function detectBlackAnswerMasks(tc, vp, scale = 2.0) {
+      const items = tc.items.map(it => ({
+        str: it.str.trim(),
+        x: it.transform[4],
+        y: vp.height - it.transform[5],
+        w: it.width || 10,
+        h: it.height || 10
+      })).filter(it => it.str.length > 0);
+
+      const masks = [];
+
+      function isInstructionParen(text) {
+        return /每[題格組個括部]|一題|共\s*\d+\s*分|全對|請填入|填因數或倍數|單位|如圖|不計分/.test(text);
+      }
+
+      // 1. 行分組（容許同式分數／算式公差 7.0pt）
+      const sorted = [...items].sort((a, b) => Math.abs(a.y - b.y) <= 7.0 ? a.x - b.x : a.y - b.y);
+      const lines = [];
+      let curLine = [];
+      for (const it of sorted) {
+        if (curLine.length === 0 || Math.abs(it.y - curLine[0].y) <= 7.0) {
+          curLine.push(it);
+        } else {
+          lines.push(curLine);
+          curLine = [it];
+        }
+      }
+      if (curLine.length > 0) lines.push(curLine);
+
+      for (const line of lines) {
+        for (let i = 0; i < line.length; i++) {
+          const it = line[i];
+
+          // 1.1 單獨的 是非題 答案：O, X, ○, ╳
+          if (/^[OXox○╳]$/.test(it.str)) {
+            const prev = line[i - 1];
+            const next = line[i + 1];
+            const hasParen = (prev && (prev.str.endsWith("(") || prev.str.endsWith("（"))) ||
+                            (next && (next.str.startsWith(")") || next.str.startsWith("）")));
+            if (hasParen || it.x < 120) {
+              masks.push({ x: (it.x - 2) * scale, y: (it.y - it.h - 2) * scale, w: (it.w + 4) * scale, h: (it.h + 5) * scale });
+              continue;
+            }
+          }
+
+          // 1.2 同行成對括號內的答案
+          if (it.str.endsWith("(") || it.str.endsWith("（")) {
+            for (let j = i + 1; j < line.length; j++) {
+              const endIt = line[j];
+              if (endIt.str.startsWith(")") || endIt.str.startsWith("）")) {
+                const innerItems = line.slice(i + 1, j);
+                const innerText = innerItems.map(x => x.str).join("").trim();
+
+                if (innerText.length > 0 && !isInstructionParen(innerText)) {
+                  const prevItem = i > 0 ? line[i - 1] : null;
+                  const nextAfter = j + 1 < line.length ? line[j + 1] : null;
+
+                  const isSingleChoiceLetter = /^[A-Da-d1-4]$/.test(innerText);
+                  const isNextToQNum = (prevItem && /^[123456789]\./.test(prevItem.str)) ||
+                                       (nextAfter && /^[123456789]\./.test(nextAfter.str));
+
+                  if (isSingleChoiceLetter && !isNextToQNum) {
+                    // 這是選擇題選項如 ( A )，保留
+                    break;
+                  }
+
+                  for (const ansItem of innerItems) {
+                    masks.push({ x: (ansItem.x - 2) * scale, y: (ansItem.y - ansItem.h - 2) * scale, w: (ansItem.w + 4) * scale, h: (ansItem.h + 5) * scale });
+                  }
+                }
+                break;
+              }
+            }
+          }
+
+          // 1.3 單一文字項目自帶括號 "(答案)"
+          const mComb = it.str.match(/^[(（]\s*([^\(\)（）]+)\s*[)）]$/);
+          if (mComb) {
+            const inner = mComb[1].trim();
+            const prevItem = i > 0 ? line[i - 1] : null;
+            const nextAfter = i + 1 < line.length ? line[i + 1] : null;
+
+            const isSingleChoiceLetter = /^[A-Da-d1-4]$/.test(inner);
+            const isNextToQNum = (prevItem && /^[123456789]\./.test(prevItem.str)) ||
+                                 (nextAfter && /^[123456789]\./.test(nextAfter.str));
+
+            if (!isInstructionParen(inner)) {
+              if (isSingleChoiceLetter && !isNextToQNum) {
+                // 選項保留
+              } else if (/^[OXox○╳]$/.test(inner) || isNextToQNum || inner.length >= 2 || /^\d/.test(inner)) {
+                masks.push({ x: (it.x + 3) * scale, y: (it.y - it.h - 2) * scale, w: Math.max(4, (it.w - 6)) * scale, h: (it.h + 5) * scale });
+              }
+            }
+          }
+        }
+
+        // 1.4 冒號後解答清單 (如 因數：1、2、4... 公倍數：48...)
+        const colonItem = line.find(it => ["因數：", "公因數：", "最大公因數：", "公倍數：", "最小公倍數：", "答案："].some(k => it.str.endsWith(k)));
+        if (colonItem) {
+          const answersOnLine = line.filter(other => other.x > (colonItem.x + colonItem.w));
+          for (const ans of answersOnLine) {
+            masks.push({ x: (ans.x - 2) * scale, y: (ans.y - ans.h - 2) * scale, w: (ans.w + 4) * scale, h: (ans.h + 5) * scale });
+          }
+        }
+      }
+
+      // 2. 算算看／直式計算區塊塗白（保留題幹 1. 0.364+...，抹除底下直式計算筆跡）
+      const secHeaders = items.filter(it => /^[一二三四五六七八九]、/.test(it.str));
+      for (const sh of secHeaders) {
+        const isCol2 = vp.width > 700 && sh.x > 360;
+        const sameLineItems = items.filter(other => Math.abs(other.y - sh.y) < 5 && (vp.width > 700 ? (other.x > 360) === isCol2 : true));
+        const lineText = sameLineItems.map(it => it.str).join("");
+
+        if (lineText.includes("算算看") || lineText.includes("直式") || lineText.includes("計算")) {
+          const nextSec = secHeaders.find(other => (vp.width > 700 ? (other.x > 360) === isCol2 : true) && other.y > (sh.y + 20));
+          const endY = nextSec ? nextSec.y : (vp.height - 20);
+
+          const problems = items.filter(it => (vp.width > 700 ? (it.x > 360) === isCol2 : true) && it.y > sh.y && it.y < endY && /^[123456789]\.$/.test(it.str));
+          for (let i = 0; i < problems.length; i++) {
+            const p = problems[i];
+            const nextY = (i + 1 < problems.length) ? problems[i + 1].y : endY;
+            const colW = isCol2 ? (vp.width - p.x - 30) : (vp.width > 700 ? 350 - p.x : vp.width - p.x - 30);
+            masks.push({
+              x: (p.x + 20) * scale,
+              y: (p.y + 10) * scale,
+              w: Math.max(50, colW) * scale,
+              h: Math.max(20, nextY - p.y - 15) * scale
+            });
+          }
+        }
+      }
+
+      // 3. 應用題／計算題解答區塊 (從 解答：、解析： 抹除至下一題前)
+      const solHeaders = items.filter(it => /^(解答|解析|解)[:：]|【(解答|解)】/.test(it.str));
+      for (let i = 0; i < solHeaders.length; i++) {
+        const sh = solHeaders[i];
+        const isCol2 = vp.width > 700 && sh.x > 360;
+        const colRight = isCol2 ? vp.width - 15 : (vp.width > 700 ? 365 : vp.width - 15);
+        const nextQ = items.find(other => {
+          const otherCol = vp.width > 700 && other.x > 360;
+          return (vp.width > 700 ? otherCol === isCol2 : true) && other.y > (sh.y + 15) && (/^[123456789]\./.test(other.str) || /^[一二三四五六七八九]、/.test(other.str));
+        });
+        const bottomY = nextQ ? nextQ.y - 8 : (vp.height - 25);
+        masks.push({
+          x: (sh.x - 5) * scale,
+          y: (sh.y - sh.h - 5) * scale,
+          w: (colRight - sh.x + 5) * scale,
+          h: (bottomY - sh.y + sh.h + 5) * scale
+        });
+      }
+
+      // 4. 幾何圖形填空／填圖題（如六、在括弧中填上各部位的名稱）
+      for (const sh of secHeaders) {
+        const isCol2 = vp.width > 700 && sh.x > 360;
+        const sameLineItems = items.filter(other => Math.abs(other.y - sh.y) < 5 && (vp.width > 700 ? (other.x > 360) === isCol2 : true));
+        const lineText = sameLineItems.map(it => it.str).join("");
+
+        if (lineText.includes("部位") || lineText.includes("名稱") || lineText.includes("填圖")) {
+          const nextSec = secHeaders.find(other => (vp.width > 700 ? (other.x > 360) === isCol2 : true) && other.y > (sh.y + 20));
+          const endY = nextSec ? nextSec.y : (vp.height - 20);
+
+          const diagramLabels = items.filter(it => (vp.width > 700 ? (it.x > 360) === isCol2 : true) && it.y > (sh.y + 15) && it.y < (endY - 10));
+          for (const dl of diagramLabels) {
+            masks.push({
+              x: (dl.x - 2) * scale,
+              y: (dl.y - dl.h - 2) * scale,
+              w: (dl.w + 4) * scale,
+              h: (dl.h + 5) * scale
+            });
+          }
+        }
+      }
+
+      return masks;
+    }
+
     async function removeRedFromPdf(pdfArrayBuffer) {
       const pdf = await pdfjsLib.getDocument({ data: pdfArrayBuffer.slice(0) }).promise;
       const { PDFDocument } = PDFLib;
@@ -419,10 +595,22 @@
 
         await page.render({ canvasContext: ctx, viewport }).promise;
 
+        // 1. 智慧文字幾何辨識：抹除黑白標準答案（是非/選擇/填空/直式計算/應用題解答）
+        try {
+          const tc = await page.getTextContent();
+          const vp1 = page.getViewport({ scale: 1.0 });
+          const masks = detectBlackAnswerMasks(tc, vp1, 2.0);
+          ctx.fillStyle = "#FFFFFF";
+          for (const m of masks) {
+            ctx.fillRect(m.x, m.y, m.w, m.h);
+          }
+        } catch (textErr) {
+          console.warn("黑白答案遮罩辨識警告:", textErr);
+        }
+
+        // 2. 偵測並擦除紅字像素 (RGB 轉精確紅色閥值，兼容紅色解答)
         const imgData = ctx.getImageData(0, 0, canvas.width, canvas.height);
         const data = imgData.data;
-
-        // 偵測並擦除紅字像素 (RGB 轉精確紅色閥值)
         for (let idx = 0; idx < data.length; idx += 4) {
           const r = data[idx];
           const g = data[idx + 1];
