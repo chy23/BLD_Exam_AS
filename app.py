@@ -79,7 +79,7 @@ def format_cell_text(cell, text, bold=False, size_pt=10.5, align=WD_ALIGN_PARAGR
 def add_header_table(doc, exam_title):
     """
     建立標準台灣試卷答案卷標頭表格：
-    包含大標題、班級、年班、座號、姓名、得分格（帶清晰黑色實線框）
+    包含大標題（忠實複製原考卷標題）、班級、年班、座號、姓名、得分格
     """
     table = doc.add_table(rows=2, cols=8)
     table.alignment = WD_TABLE_ALIGNMENT.CENTER
@@ -181,7 +181,7 @@ def remove_red_from_pdf(pdf_bytes):
     return output_io.getvalue()
 
 # ==========================================
-# 3. 試卷結構深度解析 (嚴謹題號順序與計分推估)
+# 3. 試卷結構深度解析 (精準標題抓取、計分推估與題號解析)
 # ==========================================
 
 def extract_pdf_structure(pdf_bytes):
@@ -221,24 +221,41 @@ def extract_pdf_structure(pdf_bytes):
                 if line_str:
                     lines_in_order.append(line_str)
 
-    # 擷取試卷大標題
-    exam_title = "國小 評量試卷"
-    for line in lines_in_order[:12]:
-        if any(k in line for k in ["國小", "國中", "學年度", "試卷", "評量", "領域", "數學", "國語", "自然", "社會"]):
-            exam_title = line
+    # 1. 忠實擷取原考卷標題 (抓取大題「一、」之前的所有標題文字)
+    section_regex = re.compile(r'^[（\(]?[一二三四五六七八九十壹貳參肆伍陸柒捌玖拾]+[）\)]?[、.．\s]+(.*)')
+    
+    first_sec_idx = len(lines_in_order)
+    for idx, line in enumerate(lines_in_order):
+        if section_regex.match(line):
+            first_sec_idx = idx
             break
 
-    # 大題正則與計分正則
-    section_regex = re.compile(r'^[（\(]?[一二三四五六七八九十壹貳參肆伍陸柒捌玖拾]+[）\)]?[、.．\s]+(.*)')
-    # 計分正則：支援「每格 2 分，共 16 分」、「表格每格 2 分」、「每題 4 分，共 72 分」等
-    score_regex = re.compile(r'(?:每|一)[小題題格份個問]+[：:\s]*(\d+)\s*分.*?共\s*(\d+)\s*分')
-    alt_score_regex = re.compile(r'共\s*(\d+)\s*分.*?(?:每|一)[小題題格份個問]+[：:\s]*(\d+)\s*分')
-    direct_count_regex = re.compile(r'共\s*(\d+)\s*[題格小題份]')
+    # 收集第一大題之前的所有純標題文字（過濾個人資訊欄）
+    raw_title_lines = []
+    for line in lines_in_order[:first_sec_idx]:
+        # 過濾掉學生填寫格欄位
+        if any(k in line for k in ["姓名：", "姓名:", "座號：", "座號:", "得分", "年 班", "年級"]):
+            continue
+        if re.search(r'[\d一二三四五六]\s*年.*?班.*?號', line):
+            continue
+        raw_title_lines.append(line)
+
+    if raw_title_lines:
+        exam_title = " ".join(raw_title_lines)
+    else:
+        exam_title = "國小 評量試卷"
+
+    # 2. 分割大題與解析
+    score_regexes = [
+        re.compile(r'(?:每|一)[小題題格份個問]+[：:\s]*(\d+)\s*分.*?共\s*(\d+)\s*分'),
+        re.compile(r'共\s*(\d+)\s*分.*?(?:每|一)[小題題格份個問]+[：:\s]*(\d+)\s*分'),
+        re.compile(r'共\s*(\d+)\s*[題格小題份]')
+    ]
 
     sections = []
     current_sec = None
 
-    for line in lines_in_order:
+    for line in lines_in_order[first_sec_idx:]:
         sec_m = section_regex.match(line)
         if sec_m:
             if current_sec:
@@ -251,38 +268,18 @@ def extract_pdf_structure(pdf_bytes):
                 sec_type = "TRUE_FALSE"
             elif any(k in title for k in ["選擇", "選出", "選一選"]):
                 sec_type = "CHOICE"
-            elif any(k in title for k in ["填填看", "填一填", "填入", "填寫", "填充", "填空"]):
-                sec_type = "FILL_BLANK"
-            elif any(k in title for k in ["算算看", "計算", "直式", "做做看"]):
+            elif any(k in title for k in ["算算看", "直式算算看", "用直式", "計算"]):
                 sec_type = "CALCULATION"
-            elif any(k in title for k in ["做法", "應用", "問答", "過程", "解決", "寫出", "記下來", "先圈", "圈一圈"]):
+            elif any(k in title for k in ["做法", "應用", "問答", "記下來", "先圈", "圈一圈"]):
                 sec_type = "APPLICATION"
-
-            # 計算期望題數
-            expected_count = 0
-            sc_m = score_regex.search(title)
-            if sc_m:
-                each_pt = int(sc_m.group(1))
-                total_pt = int(sc_m.group(2))
-                if each_pt > 0:
-                    expected_count = total_pt // each_pt
-            else:
-                alt_m = alt_score_regex.search(title)
-                if alt_m:
-                    total_pt = int(alt_m.group(1))
-                    each_pt = int(alt_m.group(2))
-                    if each_pt > 0:
-                        expected_count = total_pt // each_pt
-                else:
-                    dir_m = direct_count_regex.search(title)
-                    if dir_m:
-                        expected_count = int(dir_m.group(1))
+            elif any(k in title for k in ["填填看", "填一填", "填入", "填寫", "填充", "填空", "四捨五入", "求商", "不用計算"]):
+                sec_type = "FILL_BLANK"
 
             current_sec = {
                 "title": title,
                 "type": sec_type,
-                "expected_count": expected_count,
                 "raw_lines": [],
+                "expected_count": 0,
                 "questions": []
             }
         else:
@@ -292,92 +289,95 @@ def extract_pdf_structure(pdf_bytes):
     if current_sec:
         sections.append(current_sec)
 
-    # ========================================================
-    # 嚴謹的題號順序抽取與驗證演算法（徹底杜絕 200, 150, 53 等內文數字）
-    # ========================================================
+    # 3. 逐一大題分析計分公式與抽取題號
     for sec in sections:
-        expected_cnt = sec["expected_count"]
-        raw_lines = sec["raw_lines"]
-        s_type = sec["type"]
-
-        detected_q = []
-        for line in raw_lines:
-            line_str = line.strip()
-            if not line_str:
-                continue
-
-            # 嚴格「行首錨定」題號比對：只比對出現在行首的題號，絕不搜尋句子中間的數字！
-            # 模式 1: "1.", "2.", "1、", "( ) 1.", "（ ）1.", "1. ( )"
-            m1 = re.match(r'^(?:[\(（][^\)）]*[\)）]\s*)?(\d{1,2})[\.．、]', line_str)
-            # 模式 2: "(1)", "（1）"
-            m2 = re.match(r'^[\(（](\d{1,2})[\)）]', line_str)
-            # 模式 3: "3-a", "3-b", "7-1", "7-2"
-            m3 = re.match(r'^(\d{1,2}[-_][a-zA-Z0-9]+)[\.．、]?', line_str)
-
+        # 搜尋計分資訊：檢查標題與前 3 行文字（例如第二行「(每題 8 分，共 40 分)」）
+        lines_to_search = [sec["title"]] + sec["raw_lines"][:3]
+        expected_cnt = 0
+        for l in lines_to_search:
+            m1 = score_regexes[0].search(l)
+            if m1:
+                each_pt = int(m1.group(1))
+                total_pt = int(m1.group(2))
+                if each_pt > 0:
+                    expected_cnt = total_pt // each_pt
+                    break
+            m2 = score_regexes[1].search(l)
+            if m2:
+                total_pt = int(m2.group(1))
+                each_pt = int(m2.group(2))
+                if each_pt > 0:
+                    expected_cnt = total_pt // each_pt
+                    break
+            m3 = score_regexes[2].search(l)
             if m3:
-                qid = m3.group(1)
-                if qid not in detected_q:
-                    detected_q.append(qid)
-            elif m1:
-                qid = m1.group(1)
-                if qid not in detected_q:
-                    detected_q.append(qid)
-            elif m2:
-                qid = m2.group(1)
-                if qid not in detected_q:
-                    detected_q.append(qid)
+                expected_cnt = int(m3.group(1))
+                break
 
-        # 檢驗抓取到的題號是否合乎常理：
-        # 1. 考卷任何大題的第一題必須是 1（或 1-1, 1-a 等），絕不可能從 4 或 10 開始！
-        # 2. 題號不得大於 50（國小國中考卷單一大題不可能有超過 50 題）
-        # 3. 題號必須大致按順序遞增
+        sec["expected_count"] = expected_cnt
+
+        # 抽取題號：尋找所有的 (1), (2) 或 1., 2. 或 3-a 等
+        detected_q = []
+        for line in sec["raw_lines"]:
+            # 搜尋行內所有括弧題號 (1), (2), (3)...
+            p_matches = re.findall(r'[\(（](\d{1,2})[\)）]', line)
+            for pm in p_matches:
+                val = int(pm)
+                if 1 <= val <= 40:
+                    val_str = str(val)
+                    if val_str not in detected_q:
+                        detected_q.append(val_str)
+
+            # 搜尋行首題號 1., 2., 1、, 2、
+            m_dot = re.match(r'^\s*(\d{1,2})[\.．、]', line)
+            if m_dot:
+                val = int(m_dot.group(1))
+                if 1 <= val <= 40:
+                    val_str = str(val)
+                    if val_str not in detected_q:
+                        detected_q.append(val_str)
+
+            # 搜尋子題號 3-a, 7-1
+            m_sub = re.match(r'^\s*(\d{1,2}[-_][a-zA-Z0-9]+)', line)
+            if m_sub:
+                val_str = m_sub.group(1)
+                if val_str not in detected_q:
+                    detected_q.append(val_str)
+
+        # 檢驗抓取到的題號是否合乎序列
         is_valid_sequence = False
         if detected_q:
-            first_item = detected_q[0]
-            first_num_m = re.match(r'^(\d+)', first_item)
-            if first_num_m and int(first_num_m.group(1)) == 1:
-                # 第一題是 1，檢查整體合理性
-                all_reasonable = True
-                prev_n = 0
-                for item in detected_q:
-                    nm = re.match(r'^(\d+)', item)
-                    if nm:
-                        val = int(nm.group(1))
-                        if val > 50 or val < prev_n - 1:
-                            all_reasonable = False
-                            break
-                        prev_n = val
-                    else:
-                        all_reasonable = False
-                        break
-                is_valid_sequence = all_reasonable
+            # 第一題必須是 1
+            if detected_q[0] == "1":
+                is_valid_sequence = True
 
         final_questions = []
         if is_valid_sequence:
             final_questions = detected_q
-            # 若有明確預期題數且抓到的題號較少，循序補齊
-            if expected_cnt > len(final_questions) and expected_cnt <= 50:
+            # 若期望題數大於抓到的題數，補齊至期望題數
+            if expected_cnt > len(final_questions) and expected_cnt <= 40:
                 last_n = int(re.match(r'^(\d+)', final_questions[-1]).group(1))
                 while len(final_questions) < expected_cnt:
                     last_n += 1
                     final_questions.append(str(last_n))
+            # 若抓到的題數多於期望題數，且期望題數有效，截取至期望題數
+            elif expected_cnt > 0 and len(final_questions) > expected_cnt:
+                final_questions = final_questions[:expected_cnt]
         else:
-            # 若無效（例如抓到了 4, 200, 150 等題目內文數字），強制使用預期題數或標準連續題號 1, 2, 3...
-            if expected_cnt > 0 and expected_cnt <= 50:
+            # 若未抓到或序列不合，直接使用計分推估的題目數
+            if expected_cnt > 0 and expected_cnt <= 40:
                 final_questions = [str(i) for i in range(1, expected_cnt + 1)]
             else:
-                # 依題型推估標準題數
+                s_type = sec["type"]
                 if s_type in ["CHOICE", "TRUE_FALSE"]:
-                    default_cnt = 10
-                elif s_type == "FILL_BLANK":
-                    default_cnt = 8
+                    def_cnt = 10
                 elif s_type == "CALCULATION":
-                    default_cnt = 3
+                    def_cnt = 4
                 elif s_type == "APPLICATION":
-                    default_cnt = 2
+                    def_cnt = 4
                 else:
-                    default_cnt = 2
-                final_questions = [str(i) for i in range(1, default_cnt + 1)]
+                    def_cnt = 4
+                final_questions = [str(i) for i in range(1, def_cnt + 1)]
 
         sec["questions"] = final_questions
 
@@ -419,7 +419,7 @@ def generate_blank_answer_sheet_docx(pdf_bytes):
         s_type = sec["type"]
 
         if s_type in ["CHOICE", "TRUE_FALSE", "FILL_BLANK"]:
-            # --- 選擇題 / 是非題 / 填填看：標準 10 欄網格表格 ---
+            # --- 選擇題 / 是非題 / 填填看 / 比大小填入符號：網格表格 ---
             col_max = 10
             total_q = len(q_list)
             for chunk_start in range(0, total_q, col_max):
@@ -458,10 +458,14 @@ def generate_blank_answer_sheet_docx(pdf_bytes):
                 p_space.paragraph_format.space_after = Pt(2)
 
         elif s_type == "CALCULATION":
-            # --- 算算看 / 計算題 / 做做看：3 欄大型計算網格 ---
-            col_cnt = 3 if len(q_list) >= 3 else len(q_list)
-            col_cnt = max(col_cnt, 1)
+            # --- 直式算算看 / 計算題：2 欄或 3 欄大型計算網格 ---
             total_q = len(q_list)
+            # 若為 2 題或 4 題，採用 2 欄對稱排版（如考卷原格式 2x2 格）
+            if total_q in [2, 4]:
+                col_cnt = 2
+            else:
+                col_cnt = 3 if total_q >= 3 else total_q
+            col_cnt = max(col_cnt, 1)
 
             for chunk_start in range(0, total_q, col_cnt):
                 chunk = q_list[chunk_start:chunk_start + col_cnt]
@@ -470,7 +474,7 @@ def generate_blank_answer_sheet_docx(pdf_bytes):
                 tbl = doc.add_table(rows=1, cols=num_cols)
                 tbl.alignment = WD_TABLE_ALIGNMENT.CENTER
                 tbl.autofit = False
-                tbl.rows[0].height = Pt(135) # 直式算式垂直高度
+                tbl.rows[0].height = Pt(130) # 直式算式垂直高度
 
                 cell_w = Inches(7.2 / num_cols)
 
@@ -481,7 +485,7 @@ def generate_blank_answer_sheet_docx(pdf_bytes):
                     p.paragraph_format.space_before = Pt(4)
                     p.paragraph_format.space_after = Pt(0)
                     p.paragraph_format.left_indent = Inches(0.08)
-                    run_num = p.add_run(f"{q_num}.")
+                    run_num = p.add_run(f"({q_num})")
                     run_num.bold = True
                     run_num.font.name = '微軟正黑體'
                     run_num._element.rPr.rFonts.set(qn('w:eastAsia'), '微軟正黑體')
@@ -496,19 +500,19 @@ def generate_blank_answer_sheet_docx(pdf_bytes):
                 p_space.paragraph_format.space_after = Pt(3)
 
         elif s_type == "APPLICATION":
-            # --- 應用題 / 問答題 / 把做法和答案記下來 / 圈一圈：單欄大型作答框 ---
+            # --- 應用題 / 問答題 / 把做法和答案記下來：單欄大型作答框 ---
             for q_num in q_list:
                 tbl = doc.add_table(rows=1, cols=1)
                 tbl.alignment = WD_TABLE_ALIGNMENT.CENTER
                 tbl.autofit = False
-                tbl.rows[0].height = Pt(110) # 寬敞的解題作答空間
+                tbl.rows[0].height = Pt(105) # 寬敞的解題作答空間
 
                 cell = tbl.cell(0, 0)
                 cell.width = Inches(7.2)
                 p_q = cell.paragraphs[0]
                 p_q.paragraph_format.space_before = Pt(4)
                 p_q.paragraph_format.left_indent = Inches(0.08)
-                run_q = p_q.add_run(f"{q_num}. ")
+                run_q = p_q.add_run(f"({q_num}) ")
                 run_q.bold = True
                 run_q.font.name = '微軟正黑體'
                 run_q._element.rPr.rFonts.set(qn('w:eastAsia'), '微軟正黑體')
@@ -517,7 +521,7 @@ def generate_blank_answer_sheet_docx(pdf_bytes):
                 # 底部加入「答：」
                 p_ans = cell.add_paragraph()
                 p_ans.alignment = WD_ALIGN_PARAGRAPH.RIGHT
-                p_ans.paragraph_format.space_before = Pt(65)
+                p_ans.paragraph_format.space_before = Pt(60)
                 run_ans = p_ans.add_run("答：____________________    ")
                 run_ans.font.name = '微軟正黑體'
                 run_ans._element.rPr.rFonts.set(qn('w:eastAsia'), '微軟正黑體')
