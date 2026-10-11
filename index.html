@@ -24,10 +24,7 @@
   <div class="max-w-4xl mx-auto bg-white rounded-2xl shadow-xl overflow-hidden border border-slate-200">
     <!-- 頂部標題區 -->
     <div class="bg-gradient-to-r from-blue-700 via-indigo-700 to-blue-800 text-white p-8 text-center">
-      <h1 class="text-3xl font-extrabold tracking-tight mb-2">📝 考卷轉換與空白答案卡卷生成系統</h1>
-      <p class="text-blue-100 text-base max-w-2xl mx-auto">
-        純瀏覽器端安全運算・支援 GitHub Pages 直接部署・嚴選美歐非中國頂級繁中 AI 核心
-      </p>
+      <h1 class="text-3xl font-extrabold tracking-tight">📝 考卷轉換與空白答案卡卷生成系統</h1>
     </div>
 
     <div class="p-8 space-y-8">
@@ -54,7 +51,7 @@
             </div>
             <div>
               <h3 class="font-bold text-slate-800">WebLLM 瀏覽器本機 AI 引擎</h3>
-              <p class="text-xs text-slate-500">透過瀏覽器 WebGPU 在本機執行開源 AI 模型（100% 美國/歐洲開源模型，無任何中國模型）</p>
+              <p class="text-xs text-slate-500">透過瀏覽器 WebGPU 在本機執行開源 AI 模型</p>
             </div>
           </div>
           <label class="relative inline-flex items-center cursor-pointer">
@@ -66,16 +63,10 @@
         <!-- 模型選擇下拉選單（開啟 WebLLM 時顯示） -->
         <div id="model-select-container" class="hidden pt-3 border-t border-slate-200 space-y-3">
           <div>
-            <label class="block text-xs font-bold text-slate-700 mb-1">選擇本機 AI 模型（均為美歐非中國研發，支援繁體中文）：</label>
+            <label class="block text-xs font-bold text-slate-700 mb-1">選擇本機 AI 模型：</label>
             <select id="model-select" class="w-full p-2.5 bg-white border border-slate-300 rounded-lg text-sm focus:ring-2 focus:ring-purple-500 focus:outline-none">
-              <option value="gemma-3-4b-it-q4f16_1-MLC" selected>
-                🌟 Google Gemma 3 4B (美國 Google 最新一代 / 多模態視覺與頂級繁中，約 2.4GB) [推薦]
-              </option>
-              <option value="gemma-3-1b-it-q4f16_1-MLC">
-                ⚡ Google Gemma 3 1B (美國 Google 最新一代 / 極速輕量 128K 上下文，約 850MB)
-              </option>
-              <option value="Llama-3.2-3B-Instruct-q4f16_1-MLC">
-                🛡️ Meta Llama 3.2 3B (美國 Meta 研發 / 繁中與推理最佳平衡，約 1.9GB)
+              <option value="Llama-3.2-3B-Instruct-q4f16_1-MLC" selected>
+                🌟 Meta Llama 3.2 3B (美國 Meta 研發 / 繁中與推理最佳平衡，約 1.9GB) [推薦]
               </option>
               <option value="Llama-3.2-1B-Instruct-q4f16_1-MLC">
                 ⚡ Meta Llama 3.2 1B (美國 Meta 研發 / 極速輕量下載快，約 880MB)
@@ -89,8 +80,19 @@
               <option value="Llama-3.1-8B-Instruct-q4f16_1-MLC">
                 🚀 Meta Llama 3.1 8B (美國 Meta 研發 / 旗艦級頂級繁中推理，約 4.3GB，需高顯存)
               </option>
+              <option value="gemma-3-4b-it-q4f16_1-MLC">
+                🌟 Google Gemma 3 4B (美國 Google 最新一代 / 多模態視覺與頂級繁中，約 2.4GB)
+              </option>
+              <option value="gemma-3-1b-it-q4f16_1-MLC">
+                ⚡ Google Gemma 3 1B (美國 Google 最新一代 / 極速輕量 128K 上下文，約 850MB)
+              </option>
             </select>
           </div>
+
+          <!-- 手動載入/重試按鈕 -->
+          <button id="btn-load-model" type="button" class="w-full py-2.5 bg-purple-600 hover:bg-purple-700 text-white font-bold rounded-lg text-sm shadow transition flex items-center justify-center space-x-2">
+            <span>📥 下載並載入所選模型</span>
+          </button>
 
           <div id="llm-status-box" class="hidden text-sm space-y-1 bg-purple-50/50 p-3 rounded-lg border border-purple-100">
             <div class="flex justify-between items-center text-xs">
@@ -164,7 +166,6 @@
     <!-- 底部說明 -->
     <div class="bg-slate-100 p-6 border-t border-slate-200 text-xs text-slate-500 text-center space-y-1">
       <p>💡 提示：本網站為 100% 純前端無伺服器架構，支援離線執行，試卷絕不上傳外部伺服器。</p>
-      <p>所有本機 AI 模型均來自 Meta (美)、Google (美)、Microsoft (美)，不採用任何中國模型。</p>
       <p>支援 GitHub Pages 託管・專案庫：<a href="https://github.com/chy23/BLD_Exam_AS" target="_blank" class="text-indigo-600 underline">GitHub chy23/BLD_Exam_AS</a></p>
     </div>
   </div>
@@ -188,6 +189,7 @@
     const webllmToggle = document.getElementById("webllm-toggle");
     const modelSelectContainer = document.getElementById("model-select-container");
     const modelSelect = document.getElementById("model-select");
+    const btnLoadModel = document.getElementById("btn-load-model");
     const llmStatusBox = document.getElementById("llm-status-box");
     const llmStatusText = document.getElementById("llm-status-text");
     const llmProgressBar = document.getElementById("llm-progress-bar");
@@ -227,7 +229,41 @@
       downloadBox.classList.add("hidden");
     }
 
-    // --- WebLLM 模組切換與載入 ---
+    // --- WebLLM 模組切換與即時載入下載 ---
+    async function loadSelectedModel() {
+      const modelId = modelSelect.value;
+      llmStatusBox.classList.remove("hidden");
+      llmStatusText.innerText = `正在連接 WebGPU 並初始化模組...`;
+      llmProgressBar.style.width = `0%`;
+      llmProgressNum.innerText = `0%`;
+      btnLoadModel.disabled = true;
+      btnLoadModel.innerText = `⏳ 正在下載與載入模型中...`;
+
+      try {
+        const webllm = await import("https://esm.run/@mlc-ai/web-llm");
+        llmStatusText.innerText = `正在下載 ${modelId} 至瀏覽器快取 (請稍候)...`;
+        webllmEngine = await webllm.CreateMLCEngine(modelId, {
+          initProgressCallback: (report) => {
+            llmStatusText.innerText = report.text;
+            const pct = Math.round(report.progress * 100);
+            llmProgressBar.style.width = `${pct}%`;
+            llmProgressNum.innerText = `${pct}%`;
+          }
+        });
+        loadedModelId = modelId;
+        llmStatusText.innerText = `✅ 模型載入完成，已就緒！`;
+        btnLoadModel.disabled = false;
+        btnLoadModel.innerText = `✅ 模型已載入就緒`;
+        btnLoadModel.className = "w-full py-2.5 bg-emerald-600 hover:bg-emerald-700 text-white font-bold rounded-lg text-sm shadow transition flex items-center justify-center space-x-2";
+      } catch (err) {
+        console.error(err);
+        llmStatusText.innerText = `⚠️ 載入失敗：${err.message || "可能該模型尚未在 WebLLM 官方庫上線，請切換至 Llama-3.2 或 Gemma-2 重試"}`;
+        btnLoadModel.disabled = false;
+        btnLoadModel.innerText = `重試載入模型`;
+        btnLoadModel.className = "w-full py-2.5 bg-purple-600 hover:bg-purple-700 text-white font-bold rounded-lg text-sm shadow transition flex items-center justify-center space-x-2";
+      }
+    }
+
     webllmToggle.addEventListener("change", (e) => {
       if (e.target.checked) {
         if (!navigator.gpu) {
@@ -236,6 +272,8 @@
           return;
         }
         modelSelectContainer.classList.remove("hidden");
+        // 開啟開關時立即啟動下載！
+        loadSelectedModel();
       } else {
         modelSelectContainer.classList.add("hidden");
         webllmEngine = null;
@@ -243,22 +281,19 @@
       }
     });
 
+    btnLoadModel.addEventListener("click", () => {
+      loadSelectedModel();
+    });
+
+    modelSelect.addEventListener("change", () => {
+      if (webllmToggle.checked) {
+        loadSelectedModel();
+      }
+    });
+
     async function ensureModelLoaded(modelId) {
       if (webllmEngine && loadedModelId === modelId) return webllmEngine;
-      llmStatusBox.classList.remove("hidden");
-      llmStatusText.innerText = `載入 WebLLM 模組中...`;
-      const webllm = await import("https://esm.run/@mlc-ai/web-llm");
-      llmStatusText.innerText = `正在下載 ${modelId} 模型權重至瀏覽器快取...`;
-      webllmEngine = await webllm.CreateMLCEngine(modelId, {
-        initProgressCallback: (report) => {
-          llmStatusText.innerText = report.text;
-          const pct = Math.round(report.progress * 100);
-          llmProgressBar.style.width = `${pct}%`;
-          llmProgressNum.innerText = `${pct}%`;
-        }
-      });
-      loadedModelId = modelId;
-      llmStatusText.innerText = `✅ 模型已載入就緒！`;
+      await loadSelectedModel();
       return webllmEngine;
     }
 
