@@ -466,41 +466,66 @@
 
       let allTextLines = [];
 
-      for (let i = 1; i <= numPages; i++) {
-        const page = await pdf.getPage(i);
+      function groupItemsIntoLines(items) {
+        const sorted = [...items].sort((a, b) => {
+          if (Math.abs(a.y - b.y) <= 4.5) return a.x - b.x;
+          return a.y - b.y;
+        });
+
+        const lines = [];
+        let curr = null;
+        for (const it of sorted) {
+          if (!curr) {
+            curr = { y: it.y, text: it.str };
+          } else if (Math.abs(it.y - curr.y) <= 4.5) {
+            curr.text += (curr.text.endsWith(" ") || it.str.startsWith(" ") ? "" : " ") + it.str;
+          } else {
+            lines.push(curr.text.trim());
+            curr = { y: it.y, text: it.str };
+          }
+        }
+        if (curr) lines.push(curr.text.trim());
+        return lines;
+      }
+
+      for (let p = 1; p <= numPages; p++) {
+        const page = await pdf.getPage(p);
         const textContent = await page.getTextContent();
         const viewport = page.getViewport({ scale: 1.0 });
-        const pageWidth = viewport.width;
 
-        const items = textContent.items.map(item => ({
-          str: item.str.trim(),
-          x: item.transform[4],
-          y: viewport.height - item.transform[5]
+        const items = textContent.items.map(it => ({
+          str: it.str.trim(),
+          x: it.transform[4],
+          y: viewport.height - it.transform[5],
+          w: it.width || 0
         })).filter(it => it.str.length > 0);
 
-        // 雙欄排序（頂部標頭 ➔ 左欄 ➔ 右欄）
-        const headerThresh = viewport.height * 0.16;
-        const headerItems = items.filter(it => it.y < headerThresh);
-        const bodyItems = items.filter(it => it.y >= headerThresh);
+        let headerItems = [];
+        let bodyItems = items;
 
-        const midX = pageWidth / 2.0;
-        const leftCol = bodyItems.filter(it => it.x < midX);
-        const rightCol = bodyItems.filter(it => it.x >= midX);
-
-        if (leftCol.length > 0 && rightCol.length > 0) {
-          leftCol.sort((a, b) => a.y - b.y);
-          rightCol.sort((a, b) => a.y - b.y);
-          bodyItems.length = 0;
-          bodyItems.push(...leftCol, ...rightCol);
-        } else {
-          bodyItems.sort((a, b) => a.y - b.y);
+        if (p === 1) {
+          headerItems = items.filter(it => it.y < 95);
+          bodyItems = items.filter(it => it.y >= 95);
         }
 
-        headerItems.sort((a, b) => a.y - b.y);
-        const pageItems = [...headerItems, ...bodyItems];
+        const midX = viewport.width / 2.0;
+        const leftItems = bodyItems.filter(it => it.x < midX);
+        const rightItems = bodyItems.filter(it => it.x >= midX);
+        const crossingItems = bodyItems.filter(it => it.x < (midX - 50) && (it.x + it.w) > (midX + 50));
 
-        for (const item of pageItems) {
-          allTextLines.push(item.str);
+        const isTwoCol = (leftItems.length > 15 && rightItems.length > 15 && crossingItems.length <= 1);
+
+        if (isTwoCol) {
+          allTextLines.push(
+            ...groupItemsIntoLines(headerItems),
+            ...groupItemsIntoLines(leftItems),
+            ...groupItemsIntoLines(rightItems)
+          );
+        } else {
+          allTextLines.push(
+            ...groupItemsIntoLines(headerItems),
+            ...groupItemsIntoLines(bodyItems)
+          );
         }
       }
 
@@ -517,17 +542,14 @@
       const rawTitleLines = [];
       for (let i = 0; i < firstSecIdx; i++) {
         const l = allTextLines[i];
-        if (["姓名：", "姓名:", "座號：", "座號:", "得分", "年 班", "年級"].some(k => l.includes(k))) continue;
+        if (["姓名", "座號", "得分", "班級", "年 班", "年級"].some(k => l.includes(k))) continue;
         if (/[\d一二三四五六]\s*年.*?班.*?號/.test(l)) continue;
         rawTitleLines.push(l);
       }
-      const examTitle = rawTitleLines.length > 0 ? rawTitleLines.join(" ") : "國小 評量試卷";
+      let examTitle = rawTitleLines.length > 0 ? rawTitleLines.join(" ") : "國小 評量試卷";
+      examTitle = examTitle.replace(/([\u4e00-\u9fa5])\s+([\u4e00-\u9fa5])/g, "$1$2").replace(/([\u4e00-\u9fa5])\s+([\u4e00-\u9fa5])/g, "$1$2");
 
-      // 2. 切割大題與計分
-      const scoreRegex1 = /(?:每|一)[小題題格份個問]+[：:\s]*(\d+)\s*分.*?共\s*(\d+)\s*分/;
-      const scoreRegex2 = /共\s*(\d+)\s*分.*?(?:每|一)[小題題格份個問]+[：:\s]*(\d+)\s*分/;
-      const scoreRegex3 = /共\s*(\d+)\s*[題格小題份]/;
-
+      // 2. 切割大題與多行標題合併
       const sections = [];
       let currentSec = null;
 
@@ -535,61 +557,76 @@
         const line = allTextLines[i];
         if (sectionRegex.test(line)) {
           if (currentSec) sections.push(currentSec);
-          let secType = "OTHER";
-          if (line.includes("是非")) secType = "TRUE_FALSE";
-          else if (["選擇", "選出", "選一選"].some(k => line.includes(k))) secType = "CHOICE";
-          else if (["算算看", "直式算算看", "用直式", "計算"].some(k => line.includes(k))) secType = "CALCULATION";
-          else if (["做法", "應用", "問答", "記下來", "先圈", "圈一圈"].some(k => line.includes(k))) secType = "APPLICATION";
-          else if (["填填看", "填一填", "填入", "填寫", "填充", "填空", "四捨五入", "不用計算"].some(k => line.includes(k))) secType = "FILL_BLANK";
-
           currentSec = {
             title: line,
-            type: secType,
+            type: "FILL_BLANK",
             rawLines: [],
             expectedCount: 0,
             questions: []
           };
-        } else {
-          if (currentSec) currentSec.rawLines.push(line);
+        } else if (currentSec) {
+          currentSec.rawLines.push(line);
         }
       }
       if (currentSec) sections.push(currentSec);
 
-      // 3. 解析題數與題號
+      // 若大題標題過短或跨行，自動合併完整標題
       for (const sec of sections) {
-        const searchLines = [sec.title, ...sec.rawLines.slice(0, 3)];
-        let expCnt = 0;
-        for (const l of searchLines) {
-          const m1 = l.match(scoreRegex1);
-          if (m1 && parseInt(m1[1]) > 0) {
-            expCnt = Math.floor(parseInt(m1[2]) / parseInt(m1[1]));
-            break;
+        if (sec.title.trim().length <= 4 && sec.rawLines.length > 0) {
+          sec.title += " " + sec.rawLines.shift();
+        }
+        if ((sec.title.includes("（") && !sec.title.includes("）")) || sec.title.endsWith("（每") || sec.title.endsWith("（一")) {
+          if (sec.rawLines.length > 0) {
+            sec.title += " " + sec.rawLines.shift();
           }
-          const m2 = l.match(scoreRegex2);
-          if (m2 && parseInt(m2[2]) > 0) {
-            expCnt = Math.floor(parseInt(m2[1]) / parseInt(m2[2]));
-            break;
-          }
-          const m3 = l.match(scoreRegex3);
-          if (m3) {
-            expCnt = parseInt(m3[1]);
-            break;
+        }
+      }
+
+      function parseScoreCount(line) {
+        const clean = line.replace(/(\d)\s+(\d)/g, "$1$2");
+        const m1 = clean.match(/(?:每|一)\s*[小題題格份個問括弧]+[：:\s]*(\d+)\s*分.*?共\s*(\d+)\s*分/);
+        if (m1 && parseInt(m1[1]) > 0) return Math.floor(parseInt(m1[2]) / parseInt(m1[1]));
+        const m2 = clean.match(/共\s*(\d+)\s*分.*?(?:每|一)\s*[小題題格份個問括弧]+[：:\s]*(\d+)\s*分/);
+        if (m2 && parseInt(m2[2]) > 0) return Math.floor(parseInt(m2[1]) / parseInt(m2[2]));
+        const m3 = clean.match(/共\s*(\d+)\s*[題格小題份]/);
+        if (m3) return parseInt(m3[1]);
+        return 0;
+      }
+
+      function detectSectionType(title) {
+        if (title.includes("是非")) return "TRUE_FALSE";
+        if (["選擇", "選出", "選一選"].some(k => title.includes(k))) return "CHOICE";
+        if (["算算看", "直式算算看", "用直式", "計算", "橫式"].some(k => title.includes(k))) return "CALCULATION";
+        if (["做法", "應用", "問答", "記下來", "先圈", "圈一圈", "詳細寫出", "過程", "根據題目"].some(k => title.includes(k))) return "APPLICATION";
+        return "FILL_BLANK"; // 預設使用標準 10 欄答題框格，絕不漏畫
+      }
+
+      // 3. 解析各大題類型、預期題數與題號
+      for (const sec of sections) {
+        sec.type = detectSectionType(sec.title);
+
+        let expCnt = parseScoreCount(sec.title);
+        if (expCnt === 0) {
+          for (const rl of sec.rawLines.slice(0, 3)) {
+            expCnt = parseScoreCount(rl);
+            if (expCnt > 0) break;
           }
         }
         sec.expectedCount = expCnt;
 
+        // 僅比對行首之題號標示（防止算式內數字如 200, 150 誤判）
         const detectedQ = [];
         for (const line of sec.rawLines) {
-          const pMatches = [...line.matchAll(/[\(（](\d{1,2})[\)）]/g)];
-          for (const m of pMatches) {
-            const val = parseInt(m[1]);
+          const dotMatch = line.match(/^\s*(\d{1,2})[\.．、]/);
+          if (dotMatch) {
+            const val = parseInt(dotMatch[1]);
             if (val >= 1 && val <= 40 && !detectedQ.includes(String(val))) {
               detectedQ.push(String(val));
             }
           }
-          const dotMatch = line.match(/^\s*(\d{1,2})[\.．、]/);
-          if (dotMatch) {
-            const val = parseInt(dotMatch[1]);
+          const parenMatch = line.match(/^\s*[\(（](\d{1,2})[\)）]/);
+          if (parenMatch) {
+            const val = parseInt(parenMatch[1]);
             if (val >= 1 && val <= 40 && !detectedQ.includes(String(val))) {
               detectedQ.push(String(val));
             }
@@ -609,10 +646,11 @@
             finalQ = finalQ.slice(0, expCnt);
           }
         } else {
-          const cnt = expCnt > 0 ? expCnt : (sec.type === "CALCULATION" ? 4 : (sec.type === "APPLICATION" ? 4 : 4));
+          const cnt = expCnt > 0 ? expCnt : (sec.type === "CALCULATION" ? 4 : (sec.type === "APPLICATION" ? 2 : 4));
           finalQ = Array.from({ length: cnt }, (_, i) => String(i + 1));
         }
         sec.questions = finalQ;
+      }
       }
 
       // 如果使用者開啟了 WebLLM，可輔助驗證結構
@@ -786,6 +824,40 @@
               rows: [row]
             }));
             docElements.push(new Paragraph({ text: "", spacing: { after: 80 } }));
+          }
+        } else {
+          // 預設保底：無論任何大題，均繪製清晰標準 10 欄框格，絕不漏畫
+          const colMax = 10;
+          for (let start = 0; start < qList.length; start += colMax) {
+            const chunk = qList.slice(start, start + colMax);
+            const numCols = chunk.length;
+            const colPct = Math.floor(100 / numCols);
+
+            const rowNums = new TableRow({
+              children: chunk.map(q => new TableCell({
+                children: [new Paragraph({ children: [new TextRun({ text: `${q}.`, bold: true, size: 20 })], alignment: AlignmentType.CENTER })],
+                width: { size: colPct, type: WidthType.PERCENTAGE },
+                borders: allBorders,
+                shading: { fill: "F2F2F2", type: ShadingType.CLEAR },
+                verticalAlign: VerticalAlign.CENTER
+              }))
+            });
+
+            const rowAns = new TableRow({
+              children: chunk.map(() => new TableCell({
+                children: [new Paragraph({ text: "" })],
+                width: { size: colPct, type: WidthType.PERCENTAGE },
+                borders: allBorders,
+                verticalAlign: VerticalAlign.CENTER
+              }))
+            });
+
+            docElements.push(new Table({
+              width: { size: 100, type: WidthType.PERCENTAGE },
+              borders: allBorders,
+              rows: [rowNums, rowAns]
+            }));
+            docElements.push(new Paragraph({ text: "", spacing: { after: 60 } }));
           }
         }
       }
